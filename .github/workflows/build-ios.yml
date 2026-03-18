@@ -1,0 +1,55 @@
+
+name: Build iOS App
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install Expo CLI
+        run: npm install -g eas-cli
+
+      - name: Log in to Expo
+        run: eas login -u ${{ secrets.EXPO_USERNAME }} -p ${{ secrets.EXPO_PASSWORD }} --non-interactive
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Build the app
+        run: eas build --platform ios --profile preview --non-interactive --no-wait
+
+      - name: Wait for build to complete and get artifact URL
+        id: wait_and_get_url
+        run: |
+          BUILD_ID=$(eas build:list --status="in-progress" --limit=1 --json | jq -r '.[0].id')
+          if [ -z "$BUILD_ID" ]; then
+            echo "No in-progress build found. Checking finished builds."
+            BUILD_ID=$(eas build:list --limit=1 --json | jq -r '.[0].id')
+          fi
+          eas build:run --id $BUILD_ID -- non-interactive
+          ARTIFACT_URL=$(eas build:list --limit=1 --json | jq -r '.[0].artifacts.buildUrl')
+          echo "artifact_url=$ARTIFACT_URL" >> $GITHUB_OUTPUT
+        env:
+          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+
+      - name: Download IPA
+        run: |
+          curl -o YourAppName.ipa "${{ steps.wait_and_get_url.outputs.artifact_url }}"
+
+      - name: Upload IPA as Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-app
+          path: YourAppName.ipa
