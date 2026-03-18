@@ -1,4 +1,3 @@
-
 name: Build iOS App
 
 on:
@@ -9,47 +8,66 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+    # Use the EXPO_TOKEN for all steps in this job
+    env:
+      EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Set up Node.js
+      - name: Set up Node.js and cache dependencies
         uses: actions/setup-node@v4
         with:
           node-version: 20
-
-      - name: Install Expo CLI
-        run: npm install -g eas-cli
-
-      - name: Log in to Expo
-        run: eas login -u ${{ secrets.EXPO_USERNAME }} -p ${{ secrets.EXPO_PASSWORD }} --non-interactive
+          cache: 'npm' # Cache npm dependencies
 
       - name: Install dependencies
-        run: npm install
-
-      - name: Build the app
-        run: eas build --platform ios --profile preview --non-interactive --no-wait
-
-      - name: Wait for build to complete and get artifact URL
-        id: wait_and_get_url
         run: |
-          BUILD_ID=$(eas build:list --status="in-progress" --limit=1 --json | jq -r '.[0].id')
-          if [ -z "$BUILD_ID" ]; then
-            echo "No in-progress build found. Checking finished builds."
-            BUILD_ID=$(eas build:list --limit=1 --json | jq -r '.[0].id')
-          fi
-          eas build:run --id $BUILD_ID -- non-interactive
-          ARTIFACT_URL=$(eas build:list --limit=1 --json | jq -r '.[0].artifacts.buildUrl')
-          echo "artifact_url=$ARTIFACT_URL" >> $GITHUB_OUTPUT
-        env:
-          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+          npm install -g eas-cli
+          npm install
+
+      - name: Build the app and get Build ID
+        id: build_id
+        run: |
+          # Start the build and output metadata to a file
+          eas build --platform ios --profile preview --non-interactive --no-wait --json > build-metadata.json
+          # Extract build ID and set it as an output for the next step
+          BUILD_ID=$(jq -r '.id' build-metadata.json)
+          echo "build_id=$BUILD_ID" >> $GITHUB_OUTPUT
+
+      - name: Wait for build and get artifact URL
+        id: wait_for_build
+        run: |
+          BUILD_ID=${{ steps.build_id.outputs.build_id }}
+          echo "Waiting for build with ID: $BUILD_ID"
+          # Loop until the build is finished or has failed
+          while true; do
+            BUILD_INFO=$(eas build:view --id "$BUILD_ID" --json)
+            BUILD_STATUS=$(echo "$BUILD_INFO" | jq -r '.status')
+
+            if [[ "$BUILD_STATUS" == "finished" ]]; then
+              echo "Build finished successfully!"
+              ARTIFACT_URL=$(echo "$BUILD_INFO" | jq -r '.artifacts.buildUrl')
+              echo "artifact_url=$ARTIFACT_URL" >> $GITHUB_OUTPUT
+              break
+            elif [[ "$BUILD_STATUS" == "errored" || "$BUILD_STATUS" == "canceled" ]]; then
+              echo "Build failed or was canceled with status: $BUILD_STATUS"
+              # Optional: print build logs for easier debugging
+              eas build:log --id "$BUILD_ID"
+              exit 1
+            fi
+
+            echo "Current build status: $BUILD_STATUS. Waiting 30 seconds..."
+            sleep 30
+          done
 
       - name: Download IPA
         run: |
-          curl -o YourAppName.ipa "${{ steps.wait_and_get_url.outputs.artifact_url }}"
+          # The artifact URL might expire, so download it immediately
+          curl -o app.ipa "${{ steps.wait_for_build.outputs.artifact_url }}"
 
       - name: Upload IPA as Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ios-app
-          path: YourAppName.ipa
+          name: ios-app # The name of the artifact bundle
+          path: app.ipa # The path to the file to upload
